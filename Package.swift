@@ -18,18 +18,13 @@ let package = Package(
             name: "DevSkinMobileSDK",
             dependencies: [],
             path: ".",
-            exclude: ["DevSkinMobileSDK.podspec", "LICENSE", "README.md"],
+            exclude: ["DevSkinMobileSDK.podspec", "LICENSE", "README.md", "Package.swift"],
             sources: [
                 "DevSkinSDK.swift",
                 "Collectors",
                 "Transport",
                 "SessionRecording"
             ]
-        ),
-        .testTarget(
-            name: "DevSkinMobileSDKTests",
-            dependencies: ["DevSkinMobileSDK"],
-            path: "Tests"
         ),
     ]
 )
