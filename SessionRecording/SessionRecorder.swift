@@ -9,11 +9,25 @@ public class SessionRecorder {
     private var maskAllTextInputs = true
     private var maskedViews: Set<ObjectIdentifier> = []
     private var captureTimer: Timer?
+    private var flushTimer: Timer?
     private var sessionId: String = ""
     private var frameIndex: Int = 0
+    private var currentScreen: String = ""
+
+    // rrweb-compatible event types
+    private let TYPE_FULL_SNAPSHOT = 2
+    private let TYPE_INCREMENTAL_SNAPSHOT = 3
+    private let TYPE_META = 4
+    private let TYPE_CUSTOM = 5
+    private let SOURCE_MOUSE_INTERACTION = 2
+    private let SOURCE_SCROLL = 3
 
     private let captureInterval: TimeInterval = 0.1 // 10 FPS
+    private let flushInterval: TimeInterval = 5.0 // 5 seconds
+    private let maxEvents = 100
+    private var pendingEvents: [[String: Any]] = []
     private let serialQueue = DispatchQueue(label: "com.devskin.sessionrecording")
+    private let eventsLock = NSLock()
 
     private init() {}
 
@@ -43,6 +57,11 @@ public class SessionRecorder {
         captureTimer = Timer.scheduledTimer(withTimeInterval: captureInterval, repeats: true) { [weak self] _ in
             self?.captureFrame()
         }
+
+        // Start periodic flush
+        flushTimer = Timer.scheduledTimer(withTimeInterval: flushInterval, repeats: true) { [weak self] _ in
+            self?.flushEvents()
+        }
     }
 
     public func stopRecording() {
@@ -51,6 +70,99 @@ public class SessionRecorder {
         isRecording = false
         captureTimer?.invalidate()
         captureTimer = nil
+
+        // Flush remaining events and stop flush timer
+        flushEvents()
+        flushTimer?.invalidate()
+        flushTimer = nil
+    }
+
+    public func setCurrentScreen(_ screenName: String) {
+        guard screenName != currentScreen else { return }
+        let previousScreen = currentScreen
+        currentScreen = screenName
+
+        guard isRecording else { return }
+
+        eventsLock.lock()
+        // Add FullSnapshot for screen change
+        pendingEvents.append([
+            "type": TYPE_FULL_SNAPSHOT,
+            "data": [
+                "screen": screenName,
+                "previousScreen": previousScreen
+            ] as [String: Any],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ])
+
+        // Add Meta event
+        pendingEvents.append([
+            "type": TYPE_META,
+            "data": [
+                "href": screenName
+            ] as [String: Any],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ])
+        eventsLock.unlock()
+
+        checkFlush()
+    }
+
+    public func recordTouch(type: String, x: CGFloat, y: CGFloat, screenName: String) {
+        guard isRecording else { return }
+        eventsLock.lock()
+        pendingEvents.append([
+            "type": TYPE_INCREMENTAL_SNAPSHOT,
+            "data": [
+                "source": SOURCE_MOUSE_INTERACTION,
+                "x": x,
+                "y": y,
+                "touchType": type,
+                "screenName": screenName
+            ] as [String: Any],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ])
+        eventsLock.unlock()
+        checkFlush()
+    }
+
+    public func recordScroll(scrollY: CGFloat, scrollDepth: Int, screenName: String) {
+        guard isRecording else { return }
+        eventsLock.lock()
+        pendingEvents.append([
+            "type": TYPE_INCREMENTAL_SNAPSHOT,
+            "data": [
+                "source": SOURCE_SCROLL,
+                "y": scrollY,
+                "scrollDepth": scrollDepth,
+                "screenName": screenName
+            ] as [String: Any],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ])
+        eventsLock.unlock()
+        checkFlush()
+    }
+
+    private func checkFlush() {
+        eventsLock.lock()
+        let count = pendingEvents.count
+        eventsLock.unlock()
+        if count >= maxEvents {
+            flushEvents()
+        }
+    }
+
+    private func flushEvents() {
+        eventsLock.lock()
+        guard !pendingEvents.isEmpty else {
+            eventsLock.unlock()
+            return
+        }
+        let eventsToSend = pendingEvents
+        pendingEvents = []
+        eventsLock.unlock()
+
+        MobileTransport.shared.sendRecordingEvents(eventsToSend)
     }
 
     // MARK: - Mask Views
@@ -226,15 +338,25 @@ public class SessionRecorder {
     }
 
     private func sendSnapshot(_ snapshot: SnapshotNode) {
-        let data: [String: Any] = [
-            "sessionId": sessionId,
-            "frameIndex": frameIndex,
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "snapshot": snapshot.toDictionary()
+        // Wrap as rrweb event: first frame = FullSnapshot, rest = Custom with snapshot data
+        let eventType = frameIndex == 0 ? TYPE_FULL_SNAPSHOT : TYPE_CUSTOM
+        let event: [String: Any] = [
+            "type": eventType,
+            "data": [
+                "tag": "native_snapshot",
+                "payload": [
+                    "frameIndex": frameIndex,
+                    "snapshot": snapshot.toDictionary(),
+                    "screenName": currentScreen
+                ] as [String: Any]
+            ] as [String: Any],
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
 
-        // Send to backend (we'll use a dedicated endpoint)
-        // MobileTransport.shared.sendSessionRecordingFrame(data)
+        eventsLock.lock()
+        pendingEvents.append(event)
+        eventsLock.unlock()
+        checkFlush()
     }
 }
 

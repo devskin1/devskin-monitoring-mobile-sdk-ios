@@ -284,6 +284,15 @@ public class DevSkin {
         setupLifecycleObservers()
         setupCrashHandler()
 
+        // Configure MobileTransport
+        MobileTransport.shared.configure(config: config)
+        MobileTransport.shared.setSessionId(sessionId)
+
+        // Setup session recording
+        if config.sessionRecording.enabled {
+            setupSessionRecording()
+        }
+
         // Track session start
         trackSessionStart()
 
@@ -311,6 +320,11 @@ public class DevSkin {
 
         let previousScreen = currentScreen
         currentScreen = screenName
+
+        // Notify session recorder of screen change
+        if config?.sessionRecording.enabled == true {
+            SessionRecorder.shared.setCurrentScreen(screenName)
+        }
 
         var props = properties ?? [:]
         props["screen_name"] = screenName
@@ -466,6 +480,11 @@ public class DevSkin {
     ) {
         guard isInitialized, config?.heatmap.trackTouches == true else { return }
 
+        // Also record touch for session replay
+        if config?.sessionRecording.enabled == true {
+            SessionRecorder.shared.recordTouch(type: type, x: x, y: y, screenName: screenName)
+        }
+
         let screen = UIScreen.main.bounds
         let screenWidth = screen.width
         let screenHeight = screen.height
@@ -562,6 +581,11 @@ public class DevSkin {
         guard maxScrollY > 0 else { return }
 
         let scrollDepth = min(100, max(0, Int((scrollY / maxScrollY) * 100)))
+
+        // Also record scroll for session replay
+        if config?.sessionRecording.enabled == true {
+            SessionRecorder.shared.recordScroll(scrollY: scrollY, scrollDepth: scrollDepth, screenName: screenName ?? currentScreen)
+        }
 
         var props: [String: Any] = [
             "scrollDepth": scrollDepth,
@@ -890,6 +914,17 @@ public class DevSkin {
     private func getCarrier() -> String? {
         // Note: CTCarrier is deprecated in iOS 16+
         return nil
+    }
+
+    private func setupSessionRecording() {
+        guard let config = config else { return }
+        SessionRecorder.shared.configure(
+            sampleRate: config.sessionRecording.sampleRate,
+            maskAllTextInputs: config.sessionRecording.maskAllTextInputs
+        )
+        SessionRecorder.shared.setSessionId(sessionId)
+        SessionRecorder.shared.startRecording()
+        log("Session recording started")
     }
 
     private func setupFlushTimer() {

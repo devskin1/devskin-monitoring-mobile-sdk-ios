@@ -76,6 +76,17 @@ public class MobileTransport {
         enqueue(type: .heatmap, data: data)
     }
 
+    // MARK: - Session Recording
+    public func sendRecordingEvents(_ events: [[String: Any]]) {
+        guard !events.isEmpty else { return }
+        let payload: [String: Any] = [
+            "session_id": sessionId ?? "",
+            "events": events,
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        sendToBackend(endpoint: "/v1/rum/recordings", data: payload)
+    }
+
     // MARK: - Screen View
     public func sendScreenView(_ screenView: ScreenViewData) {
         enqueue(type: .screen, data: screenView.toDictionary())
