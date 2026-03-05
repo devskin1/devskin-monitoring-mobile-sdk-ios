@@ -23,7 +23,7 @@ public struct DevSkinConfig {
     public init(
         apiKey: String,
         appId: String,
-        apiUrl: String = "https://api.devskin.com.br",
+        apiUrl: String = "https://api-monitoring.devskin.com",
         debug: Bool = false,
         sessionRecording: SessionRecordingConfig = SessionRecordingConfig(),
         performance: PerformanceConfig = PerformanceConfig(),
@@ -642,8 +642,6 @@ public class DevSkin {
 
         var payload: [String: Any] = [
             "events": eventsToSend.map { eventToDict($0) },
-            "session_id": sessionId,
-            "user_id": currentUser?.id as Any,
             "apiKey": config.apiKey,
             "applicationId": config.appId
         ]
@@ -685,12 +683,32 @@ public class DevSkin {
     }
 
     private func eventToDict(_ event: DevSkinEvent) -> [String: Any] {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
-        guard let data = try? encoder.encode(event),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return [:]
+        var dict: [String: Any] = [
+            "applicationId": config!.appId,
+            "eventName": event.name,
+            "eventType": event.type.rawValue,
+            "timestamp": formatter.string(from: event.timestamp),
+            "sessionId": event.sessionId
+        ]
+
+        if let userId = currentUser?.id {
+            dict["userId"] = userId
+        }
+
+        if let properties = event.properties {
+            var propsDict: [String: Any] = [:]
+            for (key, value) in properties {
+                propsDict[key] = value.value
+            }
+            dict["properties"] = propsDict
+        }
+
+        if let screenInfo = event.context.screen {
+            dict["pageUrl"] = "mobile://\(screenInfo.name)"
+            dict["pageTitle"] = screenInfo.name
         }
 
         return dict
@@ -931,9 +949,63 @@ public class DevSkin {
     }
 
     private func trackSessionStart() {
+        createSession()
         track("session_start", properties: [
             "session_id": sessionId
         ])
+    }
+
+    private func createSession() {
+        guard let config = config, let device = deviceInfo else { return }
+
+        let endpoint = "\(config.apiUrl)/v1/rum/sessions"
+        guard let url = URL(string: endpoint) else { return }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        var sessionPayload: [String: Any] = [
+            "sessionId": sessionId,
+            "applicationId": config.appId,
+            "platform": "mobile-ios",
+            "anonymousId": UUID().uuidString,
+            "startedAt": formatter.string(from: Date()),
+            "deviceType": device.deviceType,
+            "deviceModel": "\(device.manufacturer) \(device.model)",
+            "osName": device.osName,
+            "osVersion": device.osVersion,
+            "screenWidth": device.screenWidth,
+            "screenHeight": device.screenHeight,
+            "apiKey": config.apiKey
+        ]
+
+        if let userId = currentUser?.id {
+            sessionPayload["userId"] = userId
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue(config.appId, forHTTPHeaderField: "X-App-Id")
+        request.setValue("mobile", forHTTPHeaderField: "X-Platform")
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: sessionPayload)
+        } catch {
+            log("Failed to serialize session: \(error)")
+            return
+        }
+
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+            if let error = error {
+                self?.log("Failed to create session: \(error)")
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse {
+                self?.log("Session created: \(self?.sessionId ?? ""), status: \(httpResponse.statusCode)")
+            }
+        }.resume()
     }
 
     private func log(_ message: String) {
